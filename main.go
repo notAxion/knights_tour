@@ -8,9 +8,54 @@ import (
 	"strings"
 )
 
+type border uint8
+
+const (
+	up border = iota + 1
+	right
+	down
+	left
+)
+
+type solveMode string
+
+func (mode solveMode) MarshalText() ([]byte, error) {
+	// don't really care about this
+	return []byte{}, nil
+}
+
+func (mode *solveMode) UnmarshalText(text []byte) error {
+	if len(text) == 0 {
+		return nil
+	}
+	switch string(text) {
+	case "smart":
+		*mode = smart
+	case "dumb":
+		*mode = dumb
+	case "stubborn":
+		*mode = stubborn
+	}
+
+	return nil
+}
+
+const (
+	smart    solveMode = "Warnsdorff's role"
+	dumb     solveMode = "bruteforce"
+	stubborn solveMode = "fixed end bruteforce"
+)
+
+// needed this while debugging with delve
+var debug bool
+
 func main() {
 	verbose := flag.Bool("v", false, "[v]erbose prints the board after tour completes")
-	sizeStr := flag.String("size", "1x1", "[size] of the tour \n\teg. --size 5x5")
+	sizeStr := flag.String("size", "1x1", "[size] of the tour \neg. --size 5x5")
+	flag.BoolVar(&debug, "debug", false, "for [debug]ging purpose")
+	// var mode solveMode
+	var mode solveMode
+	flag.TextVar(&mode, "mode", dumb, "set the solving [mode] for the tour \nOptions: smart, dumb(default), stubborn")
 	flag.Parse()
 
 	if *sizeStr == "1x1" {
@@ -23,18 +68,34 @@ func main() {
 		return
 	}
 
-	// gg := heuristicSolve(boardSize)
-	gg := bruteForce(boardSize)
-	if *verbose {
-		fmt.Println(gg)
+	switch mode {
+	case smart:
+		gg := heuristicSolve(boardSize)
+		if *verbose {
+			fmt.Println(gg)
+			fmt.Println("no. of moves knight made:", gg.debugMoves)
+		}
+	case dumb:
+		gg := bruteForce(boardSize)
+		if *verbose {
+			fmt.Println(gg)
+			fmt.Println("no. of moves knight made:", gg.debugMoves)
+		}
+	case stubborn:
+		gg := fixedBruteForce(boardSize)
+		if *verbose {
+			fmt.Println(gg)
+			fmt.Println("no. of moves knight made:", gg.debugMoves)
+		}
 	}
+	// fmt.Println(verbose, sizeStr, mode)
 }
 
 func bruteForce(boardSize pos) *game {
 	gg := newGame(boardSize)
 
 	backtracking(gg, NewPos(0, 0))
-	fmt.Println("game over you visited", gg.visits)
+	fmt.Println("game over you visited:", gg.visits, "out of", gg.boardArea)
 
 	return gg
 }
@@ -58,6 +119,45 @@ func backtracking(gg *game, to pos) bool {
 	return false
 }
 
+func fixedBruteForce(boardSize pos) *game {
+	gg := newGame(boardSize)
+
+	fixedEnd(gg, NewPos(0, 0))
+	fmt.Println("game over you visited:", gg.visits, "out of", gg.boardArea)
+
+	return gg
+}
+
+func fixedEnd(gg *game, to pos) bool {
+	gg.moveKnight(to)
+	if debug && gg.visits >= gg.boardArea {
+		fmt.Printf("%s\n", "\n"+gg.String())
+	}
+	// with inBorder(down) the knight would
+	// be able to move to the next board 
+	if gg.visits >= gg.boardArea && gg.inBorder(down) {
+		// nextBoard := gg.knight.Add(movements[2])
+		// if nextBoard == NewPos(gg.boardSize.x, 0) {
+		// 	return true
+		// }
+		// nextBoard = gg.knight.Add(movements[3])
+		// if nextBoard == NewPos(gg.boardSize.x, 0) {
+		// 	return true
+		// }
+		return true
+	}
+
+	moves := gg.findMoves()
+	for _, move := range moves {
+		if fixedEnd(gg, move) {
+			return true
+		}
+		gg.undoMove()
+	}
+
+	return false
+}
+
 func heuristicSolve(boardSize pos) *game {
 	gg := newGame(boardSize)
 	gg.moveKnight(NewPos(0, 0))
@@ -72,16 +172,27 @@ func heuristicSolve(boardSize pos) *game {
 		min := 9
 		for _, move := range moves {
 			futureMoves := gg.findMovesFrom(move)
+			// we can't have min of 0, if knight goes there
+			// the tour will end on the next move
+			if gg.visits < gg.boardArea-1 && len(futureMoves) == 0 {
+				continue
+			}
 			if min > len(futureMoves) {
 				min = len(futureMoves)
 				moves = futureMoves
 				nextMove = move
 			}
 		}
+		if min == 9 {
+			if len(moves) > 0 {
+				gg.moveKnight(moves[0])
+			}
+			break
+		}
 
 		gg.moveKnight(nextMove)
 	}
-	fmt.Println("game over you visited:", gg.visits)
+	fmt.Println("game over you visited:", gg.visits, "out of", gg.boardArea)
 
 	return gg
 }
@@ -96,7 +207,8 @@ type game struct {
 	// how many quares the knight has visited
 	visits int
 
-	undoStack []pos
+	undoStack  []pos
+	debugMoves int
 }
 
 func newGame(boardSize pos) *game {
@@ -121,6 +233,11 @@ func (g *game) moveKnight(move pos) {
 	g.visits++
 	g.board[move.x][move.y] = g.visits
 	g.knight = move
+
+	g.debugMoves++
+	// if g.debugMoves%1000000 == 0 {
+	// 	fmt.Printf("g.debugMoves: %v\n", g.debugMoves)
+	// }
 }
 
 func (g *game) undoMove() {
@@ -134,6 +251,11 @@ func (g *game) undoMove() {
 	g.visits--
 	g.board[g.knight.x][g.knight.y] = 0
 	g.knight = move
+
+	g.debugMoves++
+	// if g.debugMoves%1000000 == 0 {
+	// 	fmt.Printf("g.debugMoves: %v\n", g.debugMoves)
+	// }
 }
 
 func (g *game) findMovesFrom(from pos) []pos {
@@ -161,6 +283,21 @@ func (g *game) inside(move pos) bool {
 	}
 
 	return true
+}
+
+func (g *game) inBorder(borderSide border) bool {
+	switch borderSide {
+	case up:
+		return g.knight.x == 0 || g.knight.x == 1
+	case down:
+		return g.knight.x == g.boardSize.x-1 || g.knight.x == g.boardSize.x-2
+	case left:
+		return g.knight.y == 0 || g.knight.y == 1
+	case right:
+		return g.knight.y == g.boardSize.y-1 || g.knight.y == g.boardSize.y-2
+	}
+
+	return false
 }
 
 func (g *game) String() string {
